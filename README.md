@@ -1,4 +1,4 @@
-# ADP Jira Create Story Action
+# Jira Create Story Action
 
 Creates a Jira Cloud Story using ADP's mandatory description structure:
 
@@ -12,9 +12,9 @@ It also applies the Jira option IDs validated during the POC for `Blocked`, `Byp
 ## Example
 
 ```yaml
-- name: Create ADP Jira Story
+- name: Create Jira Story
   id: create-story
-  uses: https://bitbucket.org/adp-uat/adp-jira-create-story@v1.0.0
+  uses: https://github.com/xxx/jira-create-story@v1.0.0
   with:
     jira-url: https://adp-uat.atlassian.net
     jira-email: ${{ secrets.JIRA_EMAIL }}
