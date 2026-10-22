@@ -1,0 +1,166 @@
+apiVersion: automation.cloudbees.io/v1alpha1
+kind: action
+name: ADP Jira create story
+description: Creates a Jira Story that satisfies the ADP mandatory Story template
+
+inputs:
+  jira-url:
+    description: Jira Cloud base URL, for example https://adp-uat.atlassian.net
+    required: true
+  jira-email:
+    description: Atlassian account email associated with the API token
+    required: true
+  jira-api-token:
+    description: Atlassian API token
+    required: true
+  project-key:
+    description: Jira project key
+    required: true
+  summary:
+    description: Jira issue summary
+    required: true
+  title:
+    description: Content for the required 1. Title section
+    required: true
+  user-story:
+    description: Content for the required 2. User Story section
+    required: true
+  context-and-scope:
+    description: Content for the required 3. Context & Scope section
+    required: true
+  acceptance-criteria:
+    description: Content for the required 4. Acceptance Criteria section
+    required: true
+  issue-type-id:
+    description: ADP Jira Story issue-type ID
+    required: false
+    default: "10015"
+  blocked-option-id:
+    description: Jira option ID for Blocked equals No
+    required: false
+    default: "18957"
+  bypass-gating-option-id:
+    description: Jira option ID for Bypass Gating Rules equals No
+    required: false
+    default: "40252"
+  story-type-option-id:
+    description: Jira option ID for Story Type equals Business Value
+    required: false
+    default: "33024"
+
+outputs:
+  issue-key:
+    description: Key assigned to the new Jira Story
+    value: ${{ steps.create.outputs.issue-key }}
+  issue-id:
+    description: Jira ID assigned to the new Story
+    value: ${{ steps.create.outputs.issue-id }}
+  issue-url:
+    description: Browser URL for the new Jira Story
+    value: ${{ steps.create.outputs.issue-url }}
+
+runs:
+  steps:
+    - id: create
+      name: Create ADP Jira Story
+      uses: docker://alpine:3.20
+      shell: sh
+      env:
+        JIRA_URL: ${{ inputs.jira-url }}
+        JIRA_EMAIL: ${{ inputs.jira-email }}
+        JIRA_API_TOKEN: ${{ inputs.jira-api-token }}
+        PROJECT_KEY: ${{ inputs.project-key }}
+        SUMMARY: ${{ inputs.summary }}
+        STORY_TITLE: ${{ inputs.title }}
+        USER_STORY: ${{ inputs.user-story }}
+        CONTEXT_AND_SCOPE: ${{ inputs.context-and-scope }}
+        ACCEPTANCE_CRITERIA: ${{ inputs.acceptance-criteria }}
+        ISSUE_TYPE_ID: ${{ inputs.issue-type-id }}
+        BLOCKED_OPTION_ID: ${{ inputs.blocked-option-id }}
+        BYPASS_GATING_OPTION_ID: ${{ inputs.bypass-gating-option-id }}
+        STORY_TYPE_OPTION_ID: ${{ inputs.story-type-option-id }}
+      run: |
+        set -eu
+
+        apk add --no-cache curl jq >/dev/null
+
+        : "${JIRA_URL:?jira-url is required}"
+        : "${JIRA_EMAIL:?jira-email is required}"
+        : "${JIRA_API_TOKEN:?jira-api-token is required}"
+        : "${PROJECT_KEY:?project-key is required}"
+        : "${SUMMARY:?summary is required}"
+        : "${STORY_TITLE:?title is required}"
+        : "${USER_STORY:?user-story is required}"
+        : "${CONTEXT_AND_SCOPE:?context-and-scope is required}"
+        : "${ACCEPTANCE_CRITERIA:?acceptance-criteria is required}"
+
+        JIRA_URL="${JIRA_URL%/}"
+
+        jq -n \
+          --arg projectKey "${PROJECT_KEY}" \
+          --arg issueTypeId "${ISSUE_TYPE_ID}" \
+          --arg summary "${SUMMARY}" \
+          --arg title "${STORY_TITLE}" \
+          --arg userStory "${USER_STORY}" \
+          --arg contextScope "${CONTEXT_AND_SCOPE}" \
+          --arg acceptanceCriteria "${ACCEPTANCE_CRITERIA}" \
+          --arg blockedOptionId "${BLOCKED_OPTION_ID}" \
+          --arg bypassOptionId "${BYPASS_GATING_OPTION_ID}" \
+          --arg storyTypeOptionId "${STORY_TYPE_OPTION_ID}" \
+          '{
+            fields: {
+              project: {key: $projectKey},
+              issuetype: {id: $issueTypeId},
+              summary: $summary,
+              description: {
+                type: "doc",
+                version: 1,
+                content: [
+                  {type: "heading", attrs: {level: 2}, content: [{type: "text", text: "1. Title"}]},
+                  {type: "paragraph", content: [{type: "text", text: $title}]},
+                  {type: "heading", attrs: {level: 2}, content: [{type: "text", text: "2. User Story"}]},
+                  {type: "paragraph", content: [{type: "text", text: $userStory}]},
+                  {type: "heading", attrs: {level: 2}, content: [{type: "text", text: "3. Context & Scope"}]},
+                  {type: "paragraph", content: [{type: "text", text: $contextScope}]},
+                  {type: "heading", attrs: {level: 2}, content: [{type: "text", text: "4. Acceptance Criteria"}]},
+                  {type: "paragraph", content: [{type: "text", text: $acceptanceCriteria}]}
+                ]
+              },
+              customfield_10181: {id: $blockedOptionId},
+              customfield_10148: {id: $bypassOptionId},
+              customfield_10512: {id: $storyTypeOptionId}
+            }
+          }' > /tmp/create-story.json
+
+        HTTP_CODE=$(curl --silent --show-error \
+          --output /tmp/create-response.json \
+          --write-out '%{http_code}' \
+          --user "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+          --header "Accept: application/json" \
+          --header "Content-Type: application/json" \
+          --request POST \
+          --data @/tmp/create-story.json \
+          "${JIRA_URL}/rest/api/3/issue")
+
+        echo "Jira create response: HTTP ${HTTP_CODE}"
+
+        if [ "${HTTP_CODE}" != "201" ]; then
+          echo "Jira rejected the create request:"
+          jq . /tmp/create-response.json 2>/dev/null || cat /tmp/create-response.json
+          exit 1
+        fi
+
+        ISSUE_KEY=$(jq -r '.key // empty' /tmp/create-response.json)
+        ISSUE_ID=$(jq -r '.id // empty' /tmp/create-response.json)
+
+        if [ -z "${ISSUE_KEY}" ]; then
+          echo "Jira returned HTTP 201 but did not return an issue key."
+          exit 1
+        fi
+
+        printf '%s' "${ISSUE_KEY}" > "${CLOUDBEES_OUTPUTS}/issue-key"
+        printf '%s' "${ISSUE_ID}" > "${CLOUDBEES_OUTPUTS}/issue-id"
+        printf '%s' "${JIRA_URL}/browse/${ISSUE_KEY}" > "${CLOUDBEES_OUTPUTS}/issue-url"
+
+        echo "Created Jira Story ${ISSUE_KEY}."
+
